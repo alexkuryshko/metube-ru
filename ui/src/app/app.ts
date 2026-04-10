@@ -10,8 +10,9 @@ import { NgSelectModule } from '@ng-select/ng-select';
 import { faTrashAlt, faCheckCircle, faTimesCircle, faRedoAlt, faSun, faMoon, faCheck, faCircleHalfStroke, faDownload, faExternalLinkAlt, faFileImport, faFileExport, faCopy, faClock, faTachometerAlt, faSortAmountDown, faSortAmountUp, faChevronRight, faChevronDown, faUpload, faPause, faPlay } from '@fortawesome/free-solid-svg-icons';
 import { faGithub } from '@fortawesome/free-brands-svg-icons';
 import { CookieService } from 'ngx-cookie-service';
-import { AddDownloadPayload, DownloadsService } from './services/downloads.service';
+import { AddDownloadPayload, DownloadsService, ProxyConfig } from './services/downloads.service';
 import { SubscriptionsService } from './services/subscriptions.service';
+import { MeTubeSocket } from './services/metube-socket.service';
 import { SubscriptionRow } from './interfaces/subscription';
 import { Themes } from './theme';
 import {
@@ -59,6 +60,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   subscriptionsSvc = inject(SubscriptionsService);
   private cookieService = inject(CookieService);
   private http = inject(HttpClient);
+  private socket = inject(MeTubeSocket);
   private cdr = inject(ChangeDetectorRef);
   private destroyRef = inject(DestroyRef);
 
@@ -97,6 +99,22 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   checkingSelectedSubscriptions = false;
   hasCookies = false;
   cookieUploadInProgress = false;
+  authEnabled = false;
+  authChecked = false;
+  isAuthenticated = false;
+  authUsernameInput = '';
+  authPasswordInput = '';
+  authError = '';
+  authLoading = false;
+  proxyEnabled = false;
+  proxyScheme: 'socks5' | 'http' | 'https' = 'socks5';
+  proxyHost = '';
+  proxyPort = 1080;
+  proxyUsername = '';
+  proxyPassword = '';
+  proxyHasPassword = false;
+  proxySaving = false;
+  private appInitialized = false;
   themes: Theme[] = Themes;
   activeTheme: Theme | undefined;
   customDirs$!: Observable<string[]>;
@@ -173,55 +191,55 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   faPause = faPause;
   faPlay = faPlay;
   subtitleLanguages = [
-    { id: 'en', text: 'English' },
-    { id: 'ar', text: 'Arabic' },
-    { id: 'bn', text: 'Bengali' },
-    { id: 'bg', text: 'Bulgarian' },
-    { id: 'ca', text: 'Catalan' },
-    { id: 'cs', text: 'Czech' },
-    { id: 'da', text: 'Danish' },
-    { id: 'nl', text: 'Dutch' },
-    { id: 'es', text: 'Spanish' },
-    { id: 'et', text: 'Estonian' },
-    { id: 'fi', text: 'Finnish' },
-    { id: 'fr', text: 'French' },
-    { id: 'de', text: 'German' },
-    { id: 'el', text: 'Greek' },
-    { id: 'he', text: 'Hebrew' },
-    { id: 'hi', text: 'Hindi' },
-    { id: 'hu', text: 'Hungarian' },
-    { id: 'id', text: 'Indonesian' },
-    { id: 'it', text: 'Italian' },
-    { id: 'lt', text: 'Lithuanian' },
-    { id: 'lv', text: 'Latvian' },
-    { id: 'ms', text: 'Malay' },
-    { id: 'no', text: 'Norwegian' },
-    { id: 'pl', text: 'Polish' },
-    { id: 'pt', text: 'Portuguese' },
-    { id: 'pt-BR', text: 'Portuguese (Brazil)' },
-    { id: 'ro', text: 'Romanian' },
-    { id: 'ru', text: 'Russian' },
-    { id: 'sk', text: 'Slovak' },
-    { id: 'sl', text: 'Slovenian' },
-    { id: 'sr', text: 'Serbian' },
-    { id: 'sv', text: 'Swedish' },
-    { id: 'ta', text: 'Tamil' },
-    { id: 'te', text: 'Telugu' },
-    { id: 'th', text: 'Thai' },
-    { id: 'tr', text: 'Turkish' },
-    { id: 'uk', text: 'Ukrainian' },
-    { id: 'ur', text: 'Urdu' },
-    { id: 'vi', text: 'Vietnamese' },
-    { id: 'ja', text: 'Japanese' },
-    { id: 'ko', text: 'Korean' },
-    { id: 'zh-Hans', text: 'Chinese (Simplified)' },
-    { id: 'zh-Hant', text: 'Chinese (Traditional)' },
+    { id: 'en', text: 'Английский' },
+    { id: 'ar', text: 'Арабский' },
+    { id: 'bn', text: 'Бенгальский' },
+    { id: 'bg', text: 'Болгарский' },
+    { id: 'ca', text: 'Каталанский' },
+    { id: 'cs', text: 'Чешский' },
+    { id: 'da', text: 'Датский' },
+    { id: 'nl', text: 'Нидерландский' },
+    { id: 'es', text: 'Испанский' },
+    { id: 'et', text: 'Эстонский' },
+    { id: 'fi', text: 'Финский' },
+    { id: 'fr', text: 'Французский' },
+    { id: 'de', text: 'Немецкий' },
+    { id: 'el', text: 'Греческий' },
+    { id: 'he', text: 'Иврит' },
+    { id: 'hi', text: 'Хинди' },
+    { id: 'hu', text: 'Венгерский' },
+    { id: 'id', text: 'Индонезийский' },
+    { id: 'it', text: 'Итальянский' },
+    { id: 'lt', text: 'Литовский' },
+    { id: 'lv', text: 'Латышский' },
+    { id: 'ms', text: 'Малайский' },
+    { id: 'no', text: 'Норвежский' },
+    { id: 'pl', text: 'Польский' },
+    { id: 'pt', text: 'Португальский' },
+    { id: 'pt-BR', text: 'Португальский (Бразилия)' },
+    { id: 'ro', text: 'Румынский' },
+    { id: 'ru', text: 'Русский' },
+    { id: 'sk', text: 'Словацкий' },
+    { id: 'sl', text: 'Словенский' },
+    { id: 'sr', text: 'Сербский' },
+    { id: 'sv', text: 'Шведский' },
+    { id: 'ta', text: 'Тамильский' },
+    { id: 'te', text: 'Телугу' },
+    { id: 'th', text: 'Тайский' },
+    { id: 'tr', text: 'Турецкий' },
+    { id: 'uk', text: 'Украинский' },
+    { id: 'ur', text: 'Урду' },
+    { id: 'vi', text: 'Вьетнамский' },
+    { id: 'ja', text: 'Японский' },
+    { id: 'ko', text: 'Корейский' },
+    { id: 'zh-Hans', text: 'Китайский (упрощенный)' },
+    { id: 'zh-Hant', text: 'Китайский (традиционный)' },
   ];
   subtitleModes = [
-    { id: 'prefer_manual', text: 'Prefer Manual' },
-    { id: 'prefer_auto', text: 'Prefer Auto' },
-    { id: 'manual_only', text: 'Manual Only' },
-    { id: 'auto_only', text: 'Auto Only' },
+    { id: 'prefer_manual', text: 'Предпочитать ручные' },
+    { id: 'prefer_auto', text: 'Предпочитать авто' },
+    { id: 'manual_only', text: 'Только ручные' },
+    { id: 'auto_only', text: 'Только авто' },
   ];
   constructor() {
     this.downloadType = this.cookieService.get('metube_download_type') || 'video';
@@ -286,16 +304,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   }
 
   ngOnInit() {
-    this.downloads.getCookieStatus().pipe(takeUntilDestroyed(this.destroyRef)).subscribe(data => {
-      this.hasCookies = !!(data && typeof data === 'object' && 'has_cookies' in data && data.has_cookies);
-      this.cdr.markForCheck();
-    });
-    this.getConfiguration();
-    this.getYtdlOptionsUpdateTime();
-    this.getYtdlOptionPresets();
-    this.customDirs$ = this.getMatchingCustomDir();
-    this.setTheme(this.activeTheme!);
-
+    this.checkAuthStatus();
     this.colorSchemeMediaQuery.addEventListener('change', this.onColorSchemeChanged);
   }
 
@@ -317,6 +326,156 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   ngOnDestroy() {
     this.addRequestSub?.unsubscribe();
     this.colorSchemeMediaQuery.removeEventListener('change', this.onColorSchemeChanged);
+  }
+
+  private initializeAppData() {
+    if (this.appInitialized) return;
+    this.appInitialized = true;
+    this.downloads.getCookieStatus().pipe(takeUntilDestroyed(this.destroyRef)).subscribe(data => {
+      this.hasCookies = !!(data && typeof data === 'object' && 'has_cookies' in data && data.has_cookies);
+      this.cdr.markForCheck();
+    });
+    this.getConfiguration();
+    this.getYtdlOptionsUpdateTime();
+    this.getYtdlOptionPresets();
+    this.customDirs$ = this.getMatchingCustomDir();
+    this.loadProxyConfig();
+    this.setTheme(this.activeTheme!);
+  }
+
+  checkAuthStatus() {
+    this.http.get<{ auth_enabled: boolean; authenticated: boolean }>('auth/status')
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (res) => {
+          this.authEnabled = !!res?.auth_enabled;
+          this.isAuthenticated = !this.authEnabled || !!res?.authenticated;
+          this.authChecked = true;
+          if (this.isAuthenticated) {
+            this.initializeAppData();
+            this.socket.connect();
+          } else {
+            this.socket.disconnect();
+          }
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.authEnabled = false;
+          this.isAuthenticated = true;
+          this.authChecked = true;
+          this.initializeAppData();
+          this.socket.connect();
+          this.cdr.markForCheck();
+        },
+      });
+  }
+
+  login() {
+    if (this.authLoading) return;
+    this.authError = '';
+    if (!this.authUsernameInput.trim() || !this.authPasswordInput) {
+      this.authError = 'Введите логин и пароль';
+      return;
+    }
+    this.authLoading = true;
+    this.http.post<{ status?: string; msg?: string }>('auth/login', {
+      username: this.authUsernameInput.trim(),
+      password: this.authPasswordInput,
+    }).pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (res) => {
+          this.authLoading = false;
+          if (res?.status === 'error') {
+            this.authError = res.msg || 'Неверный логин или пароль';
+            this.cdr.markForCheck();
+            return;
+          }
+          this.isAuthenticated = true;
+          this.authChecked = true;
+          this.authPasswordInput = '';
+          this.initializeAppData();
+          this.socket.connect();
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.authLoading = false;
+          this.authError = 'Не удалось выполнить вход';
+          this.cdr.markForCheck();
+        },
+      });
+  }
+
+  logout() {
+    this.http.post('auth/logout', {}).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: () => {
+        this.isAuthenticated = false;
+        this.authPasswordInput = '';
+        this.authError = '';
+        this.socket.disconnect();
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.isAuthenticated = false;
+        this.socket.disconnect();
+        this.cdr.markForCheck();
+      },
+    });
+  }
+
+  loadProxyConfig() {
+    this.downloads.getProxyConfig().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (res) => {
+        const data = (res as { proxy?: ProxyConfig })?.proxy;
+        if (!data) return;
+        this.proxyEnabled = !!data.enabled;
+        this.proxyScheme = (data.scheme || 'socks5') as 'socks5' | 'http' | 'https';
+        this.proxyHost = data.host || '';
+        this.proxyPort = data.port || 1080;
+        this.proxyUsername = data.username || '';
+        this.proxyHasPassword = !!data.has_password;
+        this.proxyPassword = '';
+        this.cdr.markForCheck();
+      },
+    });
+  }
+
+  saveProxyConfig() {
+    if (this.proxyEnabled) {
+      if (!this.proxyHost.trim()) {
+        alert('Укажите адрес прокси-сервера');
+        return;
+      }
+      if (!this.proxyPort || this.proxyPort < 1 || this.proxyPort > 65535) {
+        alert('Укажите корректный порт прокси (1-65535)');
+        return;
+      }
+    }
+    this.proxySaving = true;
+    const payload: ProxyConfig = {
+      enabled: this.proxyEnabled,
+      scheme: this.proxyScheme,
+      host: this.proxyHost.trim(),
+      port: this.proxyPort,
+      username: this.proxyUsername.trim(),
+      password: this.proxyPassword,
+    };
+    this.downloads.saveProxyConfig(payload).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (res) => {
+        this.proxySaving = false;
+        const data = (res as { proxy?: ProxyConfig })?.proxy;
+        if (data) {
+          this.proxyHasPassword = !!data.has_password || !!this.proxyPassword;
+          this.proxyPassword = '';
+        }
+        alert('Глобальный прокси сохранен');
+        this.cdr.markForCheck();
+      },
+      error: () => {
+        this.proxySaving = false;
+        alert('Не удалось сохранить настройки прокси');
+        this.cdr.markForCheck();
+      },
+    });
   }
 
   // workaround to allow fetching of Map values in the order they were inserted
@@ -396,7 +555,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
           const date = new Date(data['update_time'] * 1000);
           this.ytDlpOptionsUpdateTime=date.toLocaleString();
         }else{
-          alert("Error reload yt-dlp options: "+data['msg']);
+          alert("Ошибка перезагрузки настроек yt-dlp: " + data['msg']);
         }
         this.cdr.markForCheck();
       }
@@ -471,11 +630,11 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
     try {
       const parsed = JSON.parse(trimmed);
       if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-        alert('Custom yt-dlp options must be a JSON object');
+        alert('Пользовательские параметры yt-dlp должны быть JSON-объектом');
         return false;
       }
     } catch {
-      alert('Custom yt-dlp options must be valid JSON');
+      alert('Пользовательские параметры yt-dlp должны быть валидным JSON');
       return false;
     }
     return true;
@@ -506,7 +665,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
     this.subscriptionsSvc.refreshList().pipe(takeUntilDestroyed(this.destroyRef)).subscribe((refreshRes) => {
       const error = this.getStatusError(refreshRes);
       if (error) {
-        alert(error || 'Refresh subscriptions failed');
+        alert(error || 'Не удалось обновить подписки');
         return;
       }
       this.cdr.markForCheck();
@@ -550,11 +709,11 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
     }
     const payload = this.buildAddPayload();
     if (!payload.url?.trim()) {
-      alert('Please enter a URL');
+      alert('Введите URL');
       return;
     }
     if (payload.splitByChapters && !payload.chapterTemplate.includes('%(section_number)')) {
-      alert('Chapter template must include %(section_number)');
+      alert('Шаблон глав должен содержать %(section_number)');
       return;
     }
     if (!this.validateYtdlOptionsOverrides(payload.ytdlOptionsOverrides)) {
@@ -577,7 +736,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
         next: (res) => {
           const r = res as { status?: string; msg?: string };
           if (r.status === 'error') {
-            alert(r.msg || 'Subscribe failed');
+            alert(r.msg || 'Не удалось добавить подписку');
           } else {
             this.addUrl = '';
           }
@@ -589,7 +748,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
     this.subscriptionsSvc.delete([id]).subscribe((res) => {
       const error = this.getStatusError(res);
       if (error) {
-        alert(error || 'Delete subscription failed');
+        alert(error || 'Не удалось удалить подписку');
         return;
       }
       this.selectedSubscriptionIds.delete(id);
@@ -605,7 +764,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
     this.subscriptionsSvc.delete(ids).subscribe((res) => {
       const error = this.getStatusError(res);
       if (error) {
-        alert(error || 'Delete subscriptions failed');
+        alert(error || 'Не удалось удалить подписки');
         return;
       }
       this.selectedSubscriptionIds.clear();
@@ -631,7 +790,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       .subscribe((res) => {
         const error = this.getStatusError(res);
         if (error) {
-          alert(error || 'Subscription check failed');
+          alert(error || 'Не удалось проверить подписку');
           return;
         }
         this.refreshSubscriptionsWithAlert();
@@ -678,7 +837,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       .subscribe((res) => {
         const error = this.getStatusError(res);
         if (error) {
-          alert(error || 'Subscription check failed');
+          alert(error || 'Не удалось проверить подписку');
           return;
         }
         this.refreshSubscriptionsWithAlert();
@@ -701,7 +860,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
     this.subscriptionsSvc.update(row.id, { enabled: !row.enabled }).subscribe((res) => {
       const error = this.getStatusError(res);
       if (error) {
-        alert(error || 'Update subscription failed');
+        alert(error || 'Не удалось обновить подписку');
       }
     });
   }
@@ -788,12 +947,20 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
     if (!q) return '';
     if (/^\d+$/.test(q) && download.download_type === 'audio') return `${q} kbps`;
     if (/^\d+$/.test(q)) return `${q}p`;
+    if (q.toLowerCase() === 'best') return 'Лучшее';
+    if (q.toLowerCase() === 'worst') return 'Худшее';
     return q.charAt(0).toUpperCase() + q.slice(1);
   }
 
   downloadTypeLabel(download: Download): string {
     const type = download.download_type || 'video';
-    return type.charAt(0).toUpperCase() + type.slice(1);
+    const map: Record<string, string> = {
+      video: 'Видео',
+      audio: 'Аудио',
+      captions: 'Субтитры',
+      thumbnail: 'Превью',
+    };
+    return map[type] ?? (type.charAt(0).toUpperCase() + type.slice(1));
   }
 
   formatCodecLabel(download: Download): string {
@@ -802,7 +969,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       return format || '-';
     }
     const codec = download.codec;
-    if (!codec || codec === 'auto') return 'Auto';
+    if (!codec || codec === 'auto') return 'Авто';
     return this.videoCodecs.find(c => c.id === codec)?.text ?? codec;
   }
 
@@ -839,13 +1006,13 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   setQualities() {
     if (this.downloadType === 'video') {
       this.qualities = this.format === 'ios'
-        ? [{ id: 'best', text: 'Best' }]
+        ? [{ id: 'best', text: 'Лучшее' }]
         : VIDEO_QUALITIES;
     } else if (this.downloadType === 'audio') {
       const selectedFormat = this.audioFormats.find(el => el.id === this.format);
-      this.qualities = selectedFormat ? selectedFormat.qualities : [{ id: 'best', text: 'Best' }];
+      this.qualities = selectedFormat ? selectedFormat.qualities : [{ id: 'best', text: 'Лучшее' }];
     } else {
-      this.qualities = [{ id: 'best', text: 'Best' }];
+      this.qualities = [{ id: 'best', text: 'Лучшее' }];
     }
     const exists = this.qualities.find(el => el.id === this.quality);
     this.quality = exists ? this.quality : 'best';
@@ -988,7 +1155,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
 
     // Validate chapter template if chapter splitting is enabled
     if (payload.splitByChapters && !payload.chapterTemplate.includes('%(section_number)')) {
-      alert('Chapter template must include %(section_number)');
+      alert('Шаблон глав должен содержать %(section_number)');
       return;
     }
     if (!this.validateYtdlOptionsOverrides(payload.ytdlOptionsOverrides)) {
@@ -1001,7 +1168,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
     this.addRequestSub?.unsubscribe();
     this.addRequestSub = this.downloads.add(payload).subscribe((status: Status) => {
       if (status.status === 'error' && !this.cancelRequested) {
-        alert(`Error adding URL: ${status.msg}`);
+        alert(`Ошибка добавления URL: ${status.msg}`);
       } else if (status.status !== 'error') {
         this.addUrl = '';
       }
@@ -1018,7 +1185,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       },
       error: (err) => {
         this.cancelRequested = false;
-        console.error('Failed to cancel adding:', err?.message || err);
+        console.error('Не удалось отменить добавление:', err?.message || err);
       }
     });
   }
@@ -1196,39 +1363,39 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       .map(url => url.trim())
       .filter(url => url.length > 0);
     if (urls.length === 0) {
-      alert('No valid URLs found.');
+      alert('Не найдено валидных URL.');
       return;
     }
     this.importInProgress = true;
     this.cancelImportFlag = false;
-    this.batchImportStatus = `Starting to import ${urls.length} URLs...`;
+    this.batchImportStatus = `Начинаю импорт ${urls.length} URL...`;
     let index = 0;
     const delayBetween = 1000;
     const processNext = () => {
       if (this.cancelImportFlag) {
-        this.batchImportStatus = `Import cancelled after ${index} of ${urls.length} URLs.`;
+        this.batchImportStatus = `Импорт отменен: ${index} из ${urls.length} URL.`;
         this.importInProgress = false;
         return;
       }
       if (index >= urls.length) {
-        this.batchImportStatus = `Finished importing ${urls.length} URLs.`;
+        this.batchImportStatus = `Импорт завершен: ${urls.length} URL.`;
         this.importInProgress = false;
         return;
       }
       const url = urls[index];
-      this.batchImportStatus = `Importing URL ${index + 1} of ${urls.length}: ${url}`;
+      this.batchImportStatus = `Импорт URL ${index + 1} из ${urls.length}: ${url}`;
       // Pass current selection options to backend
       this.downloads.add(this.buildAddPayload({ url }))
         .subscribe({
           next: (status: Status) => {
             if (status.status === 'error') {
-              alert(`Error adding URL ${url}: ${status.msg}`);
+              alert(`Ошибка добавления URL ${url}: ${status.msg}`);
             }
             index++;
             setTimeout(processNext, delayBetween);
           },
           error: (err) => {
-            console.error(`Error importing URL ${url}:`, err);
+            console.error(`Ошибка импорта URL ${url}:`, err);
             index++;
             setTimeout(processNext, delayBetween);
           }
@@ -1241,7 +1408,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
   cancelBatchImport(): void {
     if (this.importInProgress) {
       this.cancelImportFlag = true;
-      this.batchImportStatus += ' Cancelling...';
+      this.batchImportStatus += ' Отмена...';
     }
   }
 
@@ -1264,7 +1431,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       ];
     }
     if (!urls.length) {
-      alert('No URLs found for the selected filter.');
+      alert('Для выбранного фильтра URL не найдены.');
       return;
     }
     const content = urls.join('\n');
@@ -1295,13 +1462,13 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       ];
     }
     if (!urls.length) {
-      alert('No URLs found for the selected filter.');
+      alert('Для выбранного фильтра URL не найдены.');
       return;
     }
     const content = urls.join('\n');
     navigator.clipboard.writeText(content)
-      .then(() => alert('URLs copied to clipboard.'))
-      .catch(() => alert('Failed to copy URLs.'));
+      .then(() => alert('URL скопированы в буфер обмена.'))
+      .catch(() => alert('Не удалось скопировать URL.'));
   }
 
   fetchVersionInfo(): void {
@@ -1349,10 +1516,10 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
 
   copyErrorMessage(id: string, download: Download) {
     const parts: string[] = [];
-    if (download.title) parts.push(`Title: ${download.title}`);
+    if (download.title) parts.push(`Название: ${download.title}`);
     if (download.url) parts.push(`URL: ${download.url}`);
-    if (download.msg) parts.push(`Message: ${download.msg}`);
-    if (download.error) parts.push(`Error: ${download.error}`);
+    if (download.msg) parts.push(`Сообщение: ${download.msg}`);
+    if (download.error) parts.push(`Ошибка: ${download.error}`);
     const text = parts.join('\n');
     if (!text.trim()) return;
     const done = () => {
@@ -1360,8 +1527,8 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       setTimeout(() => { this.lastCopiedErrorId = null; }, 1500);
     };
     const fail = (err?: unknown) => {
-      console.error('Clipboard write failed:', err);
-      alert('Failed to copy to clipboard. Your browser may require HTTPS for clipboard access.');
+      console.error('Не удалось записать в буфер обмена:', err);
+      alert('Не удалось скопировать в буфер обмена. Для доступа к буферу браузеру может требоваться HTTPS.');
     };
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text).then(done).catch(fail);
@@ -1397,7 +1564,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
           this.hasCookies = true;
         } else {
           this.refreshCookieStatus();
-          alert(`Error uploading cookies: ${this.formatErrorMessage(response?.msg)}`);
+          alert(`Ошибка загрузки cookies: ${this.formatErrorMessage(response?.msg)}`);
         }
         this.cookieUploadInProgress = false;
         input.value = '';
@@ -1406,7 +1573,7 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
         this.refreshCookieStatus();
         this.cookieUploadInProgress = false;
         input.value = '';
-        alert('Error uploading cookies.');
+        alert('Ошибка загрузки cookies.');
       }
     });
   }
@@ -1426,10 +1593,10 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
       try {
         return JSON.stringify(error);
       } catch {
-        return 'Unknown error';
+        return 'Неизвестная ошибка';
       }
     }
-    return 'Unknown error';
+    return 'Неизвестная ошибка';
   }
 
   deleteCookies() {
@@ -1440,11 +1607,11 @@ export class App implements AfterViewInit, OnInit, OnDestroy {
           return;
         }
         this.refreshCookieStatus();
-        alert(`Error deleting cookies: ${this.formatErrorMessage(response?.msg)}`);
+        alert(`Ошибка удаления cookies: ${this.formatErrorMessage(response?.msg)}`);
       },
       error: () => {
         this.refreshCookieStatus();
-        alert('Error deleting cookies.');
+        alert('Ошибка удаления cookies.');
       }
     });
   }

@@ -14,6 +14,11 @@ import logging
 import json
 import pathlib
 import re
+import secrets
+import time
+import hmac
+from http.cookies import SimpleCookie
+from urllib.parse import quote
 from watchfiles import DefaultFilter, Change, awatch
 
 from ytdl import DownloadQueueNotifier, DownloadQueue, Download
@@ -71,9 +76,13 @@ class Config:
         'MAX_CONCURRENT_DOWNLOADS': '3',
         'LOGLEVEL': 'INFO',
         'ENABLE_ACCESSLOG': 'false',
+        'AUTH_ENABLED': 'false',
+        'AUTH_USERNAME': 'admin',
+        'AUTH_PASSWORD': 'admin',
+        'AUTH_SESSION_TTL_SECONDS': '86400',
     }
 
-    _BOOLEAN = ('DOWNLOAD_DIRS_INDEXABLE', 'CUSTOM_DIRS', 'CREATE_CUSTOM_DIRS', 'DELETE_FILE_ON_TRASHCAN', 'HTTPS', 'ENABLE_ACCESSLOG', 'ALLOW_YTDL_OPTIONS_OVERRIDES')
+    _BOOLEAN = ('DOWNLOAD_DIRS_INDEXABLE', 'CUSTOM_DIRS', 'CREATE_CUSTOM_DIRS', 'DELETE_FILE_ON_TRASHCAN', 'HTTPS', 'ENABLE_ACCESSLOG', 'ALLOW_YTDL_OPTIONS_OVERRIDES', 'AUTH_ENABLED')
 
     def __init__(self):
         for k, v in self._DEFAULTS.items():
@@ -128,6 +137,7 @@ class Config:
         'DEFAULT_OPTION_PLAYLIST_ITEM_LIMIT',
         'SUBSCRIPTION_DEFAULT_CHECK_INTERVAL',
         'ALLOW_YTDL_OPTIONS_OVERRIDES',
+        'AUTH_ENABLED',
     )
 
     def frontend_safe(self) -> dict:
@@ -234,6 +244,188 @@ VALID_VIDEO_CODECS = {'auto', 'h264', 'h265', 'av1', 'vp9'}
 VALID_VIDEO_FORMATS = {'any', 'mp4', 'ios'}
 VALID_AUDIO_FORMATS = {'m4a', 'mp3', 'opus', 'wav', 'flac'}
 VALID_THUMBNAIL_FORMATS = {'jpg'}
+VALID_PROXY_SCHEMES = {'socks5', 'http', 'https'}
+
+SESSION_COOKIE_NAME = 'metube_session'
+_auth_sessions: dict[str, int] = {}
+
+
+def _auth_enabled() -> bool:
+    return bool(config.AUTH_ENABLED)
+
+
+def _auth_ttl_seconds() -> int:
+    try:
+        ttl = int(config.AUTH_SESSION_TTL_SECONDS)
+    except (TypeError, ValueError):
+        ttl = 86400
+    return max(ttl, 300)
+
+
+def _prune_sessions() -> None:
+    now = int(time.time())
+    expired = [token for token, exp in _auth_sessions.items() if exp <= now]
+    for token in expired:
+        _auth_sessions.pop(token, None)
+
+
+def _create_session() -> tuple[str, int]:
+    token = secrets.token_urlsafe(32)
+    expires = int(time.time()) + _auth_ttl_seconds()
+    _auth_sessions[token] = expires
+    return token, expires
+
+
+def _is_authenticated_cookie(cookie_value: str | None) -> bool:
+    if not _auth_enabled():
+        return True
+    if not cookie_value:
+        return False
+    _prune_sessions()
+    expires = _auth_sessions.get(cookie_value)
+    if not expires:
+        return False
+    if expires <= int(time.time()):
+        _auth_sessions.pop(cookie_value, None)
+        return False
+    return True
+
+
+def _is_authenticated_request(request: web.Request) -> bool:
+    return _is_authenticated_cookie(request.cookies.get(SESSION_COOKIE_NAME))
+
+
+def _is_authenticated_socket_environ(environ: dict) -> bool:
+    if not _auth_enabled():
+        return True
+    cookie_header = environ.get('HTTP_COOKIE', '')
+    cookie = SimpleCookie()
+    cookie.load(cookie_header)
+    morsel = cookie.get(SESSION_COOKIE_NAME)
+    return _is_authenticated_cookie(morsel.value if morsel else None)
+
+
+def _is_static_path(path: str) -> bool:
+    if path == config.URL_PREFIX or path == config.URL_PREFIX.rstrip('/'):
+        return True
+    if path.startswith(config.URL_PREFIX + 'assets/'):
+        return True
+    static_ext = (
+        '.js', '.css', '.ico', '.png', '.svg', '.webmanifest', '.json', '.map',
+        '.woff', '.woff2', '.ttf', '.txt',
+    )
+    return path.endswith(static_ext)
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler):
+    if not _auth_enabled():
+        return await handler(request)
+    path = request.path
+    auth_public_paths = {
+        config.URL_PREFIX + 'auth/login',
+        config.URL_PREFIX + 'auth/status',
+        config.URL_PREFIX + 'robots.txt',
+    }
+    if path in auth_public_paths or _is_static_path(path):
+        return await handler(request)
+    if not _is_authenticated_request(request):
+        return web.json_response({'status': 'error', 'msg': 'Authentication required'}, status=401)
+    return await handler(request)
+
+
+app.middlewares.append(auth_middleware)
+
+
+def _sanitize_proxy_state(state: dict | None = None) -> dict:
+    src = state or {}
+    enabled = bool(src.get('enabled', False))
+    scheme = str(src.get('scheme', 'socks5')).strip().lower()
+    host = str(src.get('host', '')).strip()
+    username = str(src.get('username', '')).strip()
+    password = str(src.get('password', ''))
+    port_raw = src.get('port', 0)
+    try:
+        port = int(port_raw)
+    except (TypeError, ValueError):
+        port = 0
+    return {
+        'enabled': enabled,
+        'scheme': scheme,
+        'host': host,
+        'port': port,
+        'username': username,
+        'password': password,
+    }
+
+
+proxy_state = _sanitize_proxy_state()
+PROXY_CONFIG_PATH = os.path.join(config.STATE_DIR, 'proxy_config.json')
+
+
+def _build_proxy_url(state: dict) -> str:
+    user_part = ''
+    if state['username']:
+        user_part = quote(state['username'], safe='')
+        if state['password']:
+            user_part += ':' + quote(state['password'], safe='')
+        user_part += '@'
+    return f"{state['scheme']}://{user_part}{state['host']}:{state['port']}"
+
+
+def _validate_proxy_state(state: dict) -> None:
+    if not state['enabled']:
+        return
+    if state['scheme'] not in VALID_PROXY_SCHEMES:
+        raise web.HTTPBadRequest(reason=f"proxy scheme must be one of {sorted(VALID_PROXY_SCHEMES)}")
+    if not state['host']:
+        raise web.HTTPBadRequest(reason='proxy host is required')
+    if not (1 <= state['port'] <= 65535):
+        raise web.HTTPBadRequest(reason='proxy port must be between 1 and 65535')
+
+
+def _save_proxy_state() -> None:
+    os.makedirs(config.STATE_DIR, exist_ok=True)
+    with open(PROXY_CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump(proxy_state, f)
+
+
+def _apply_proxy_state() -> None:
+    if not proxy_state['enabled']:
+        config.remove_runtime_override('proxy')
+        return
+    config.set_runtime_override('proxy', _build_proxy_url(proxy_state))
+
+
+def _load_proxy_state() -> None:
+    if not os.path.exists(PROXY_CONFIG_PATH):
+        return
+    try:
+        with open(PROXY_CONFIG_PATH, encoding='utf-8') as f:
+            raw = json.load(f)
+        loaded = _sanitize_proxy_state(raw if isinstance(raw, dict) else {})
+        _validate_proxy_state(loaded)
+        proxy_state.update(loaded)
+        _apply_proxy_state()
+    except Exception as e:  # pylint: disable=broad-except
+        log.warning('Failed to load proxy state: %s', e)
+
+
+def _proxy_state_public() -> dict:
+    return {
+        'enabled': proxy_state['enabled'],
+        'scheme': proxy_state['scheme'],
+        'host': proxy_state['host'],
+        'port': proxy_state['port'],
+        'username': proxy_state['username'],
+        'has_password': bool(proxy_state['password']),
+    }
+
+
+def _auth_guard(request: web.Request):
+    if _auth_enabled() and not _is_authenticated_request(request):
+        return web.json_response({'status': 'error', 'msg': 'Authentication required'}, status=401)
+    return None
 def _parse_ytdl_options_overrides(value, *, enabled: bool) -> dict:
     if value is None or value == '':
         return {}
@@ -554,8 +746,86 @@ def parse_download_options(post: dict) -> dict:
     }
 
 
+@routes.get(config.URL_PREFIX + 'auth/status')
+async def auth_status(request):
+    authenticated = _is_authenticated_request(request)
+    return web.json_response({
+        'status': 'ok',
+        'auth_enabled': _auth_enabled(),
+        'authenticated': authenticated,
+        'username': config.AUTH_USERNAME if authenticated else '',
+    })
+
+
+@routes.post(config.URL_PREFIX + 'auth/login')
+async def auth_login(request):
+    if not _auth_enabled():
+        return web.json_response({'status': 'ok', 'auth_enabled': False, 'authenticated': True})
+    post = await _read_json_request(request)
+    username = str(post.get('username', ''))
+    password = str(post.get('password', ''))
+    if not (
+        hmac.compare_digest(username, str(config.AUTH_USERNAME))
+        and hmac.compare_digest(password, str(config.AUTH_PASSWORD))
+    ):
+        return web.json_response({'status': 'error', 'msg': 'Invalid credentials'}, status=401)
+    token, expires = _create_session()
+    resp = web.json_response({
+        'status': 'ok',
+        'auth_enabled': True,
+        'authenticated': True,
+        'username': config.AUTH_USERNAME,
+    })
+    resp.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=bool(config.HTTPS),
+        samesite='Lax',
+        max_age=_auth_ttl_seconds(),
+        expires=expires,
+        path=config.URL_PREFIX,
+    )
+    return resp
+
+
+@routes.post(config.URL_PREFIX + 'auth/logout')
+async def auth_logout(request):
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        _auth_sessions.pop(token, None)
+    resp = web.json_response({'status': 'ok'})
+    resp.del_cookie(SESSION_COOKIE_NAME, path=config.URL_PREFIX)
+    return resp
+
+
+@routes.get(config.URL_PREFIX + 'proxy-config')
+async def proxy_config_get(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
+    return web.json_response({'status': 'ok', 'proxy': _proxy_state_public()})
+
+
+@routes.post(config.URL_PREFIX + 'proxy-config')
+async def proxy_config_set(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
+    post = await _read_json_request(request)
+    new_state = _sanitize_proxy_state(post.get('proxy', post))
+    _validate_proxy_state(new_state)
+    proxy_state.update(new_state)
+    _apply_proxy_state()
+    _save_proxy_state()
+    return web.json_response({'status': 'ok', 'proxy': _proxy_state_public()})
+
+
 @routes.post(config.URL_PREFIX + 'add')
 async def add(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     log.info("Received request to add download")
     post = await _read_json_request(request)
     try:
@@ -593,6 +863,9 @@ async def add(request):
 
 @routes.get(config.URL_PREFIX + 'presets')
 async def presets(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     return web.Response(
         text=serializer.encode({'presets': sorted(config.YTDL_OPTIONS_PRESETS.keys())}),
         content_type='application/json',
@@ -600,12 +873,18 @@ async def presets(request):
 
 @routes.post(config.URL_PREFIX + 'cancel-add')
 async def cancel_add(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     dqueue.cancel_add()
     return web.Response(text=serializer.encode({'status': 'ok'}), content_type='application/json')
 
 
 @routes.post(config.URL_PREFIX + 'subscribe')
 async def subscribe(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     post = await _read_json_request(request)
     try:
         o = parse_download_options(post)
@@ -644,11 +923,17 @@ async def subscribe(request):
 
 @routes.get(config.URL_PREFIX + 'subscriptions')
 async def subscriptions_list(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     return web.Response(text=serializer.encode([s.to_public_dict() for s in submgr.list_all()]))
 
 
 @routes.post(config.URL_PREFIX + 'subscriptions/update')
 async def subscriptions_update(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     post = await _read_json_request(request)
     sub_id = post.get('id')
     if not sub_id:
@@ -663,6 +948,9 @@ async def subscriptions_update(request):
 
 @routes.post(config.URL_PREFIX + 'subscriptions/delete')
 async def subscriptions_delete(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     post = await _read_json_request(request)
     ids = post.get('ids')
     if not ids or not isinstance(ids, list):
@@ -673,6 +961,9 @@ async def subscriptions_delete(request):
 
 @routes.post(config.URL_PREFIX + 'subscriptions/check')
 async def subscriptions_check(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     post = await _read_json_request(request)
     ids = post.get('ids')
     if ids is not None and not isinstance(ids, list):
@@ -683,6 +974,9 @@ async def subscriptions_check(request):
 
 @routes.post(config.URL_PREFIX + 'delete')
 async def delete(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     post = await _read_json_request(request)
     ids = post.get('ids')
     where = post.get('where')
@@ -695,6 +989,9 @@ async def delete(request):
 
 @routes.post(config.URL_PREFIX + 'start')
 async def start(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     post = await _read_json_request(request)
     ids = post.get('ids')
     log.info(f"Received request to start pending downloads for ids: {ids}")
@@ -706,6 +1003,9 @@ COOKIES_PATH = os.path.join(config.STATE_DIR, 'cookies.txt')
 
 @routes.post(config.URL_PREFIX + 'upload-cookies')
 async def upload_cookies(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     reader = await request.multipart()
     field = await reader.next()
     if field is None or field.name != 'cookies':
@@ -733,6 +1033,9 @@ async def upload_cookies(request):
 
 @routes.post(config.URL_PREFIX + 'delete-cookies')
 async def delete_cookies(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     has_uploaded_cookies = os.path.exists(COOKIES_PATH)
     configured_cookiefile = config.YTDL_OPTIONS.get('cookiefile')
     has_manual_cookiefile = isinstance(configured_cookiefile, str) and configured_cookiefile and configured_cookiefile != COOKIES_PATH
@@ -760,6 +1063,9 @@ async def delete_cookies(request):
 
 @routes.get(config.URL_PREFIX + 'cookie-status')
 async def cookie_status(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     configured_cookiefile = config.YTDL_OPTIONS.get('cookiefile')
     has_configured_cookies = isinstance(configured_cookiefile, str) and os.path.exists(configured_cookiefile)
     has_uploaded_cookies = os.path.exists(COOKIES_PATH)
@@ -768,6 +1074,9 @@ async def cookie_status(request):
 
 @routes.get(config.URL_PREFIX + 'history')
 async def history(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     history = { 'done': [], 'queue': [], 'pending': []}
 
     for _, v in dqueue.queue.saved_items():
@@ -782,6 +1091,9 @@ async def history(request):
 
 @sio.event
 async def connect(sid, environ):
+    if not _is_authenticated_socket_environ(environ):
+        log.warning("Socket authentication failed for sid=%s", sid)
+        return False
     log.info(f"Client connected: {sid}")
     await sio.emit('all', serializer.encode(dqueue.get()), to=sid)
     await sio.emit('subscriptions_all', serializer.encode([s.to_public_dict() for s in submgr.list_all()]), to=sid)
@@ -872,6 +1184,9 @@ async def robots(request):
 
 @routes.get(config.URL_PREFIX + 'version')
 async def version(request):
+    guarded = _auth_guard(request)
+    if guarded is not None:
+        return guarded
     return web.json_response({
         "yt-dlp": yt_dlp_version,
         "version": os.getenv("METUBE_VERSION", "dev")
@@ -910,6 +1225,10 @@ app.router.add_route('OPTIONS', config.URL_PREFIX + 'subscriptions/delete', add_
 app.router.add_route('OPTIONS', config.URL_PREFIX + 'subscriptions/check', add_cors)
 app.router.add_route('OPTIONS', config.URL_PREFIX + 'upload-cookies', add_cors)
 app.router.add_route('OPTIONS', config.URL_PREFIX + 'delete-cookies', add_cors)
+app.router.add_route('OPTIONS', config.URL_PREFIX + 'auth/login', add_cors)
+app.router.add_route('OPTIONS', config.URL_PREFIX + 'auth/logout', add_cors)
+app.router.add_route('OPTIONS', config.URL_PREFIX + 'auth/status', add_cors)
+app.router.add_route('OPTIONS', config.URL_PREFIX + 'proxy-config', add_cors)
 
 async def on_prepare(request, response):
     if 'Origin' in request.headers:
@@ -937,6 +1256,7 @@ if __name__ == '__main__':
     logging.getLogger().setLevel(parseLogLevel(config.LOGLEVEL) or logging.INFO)
     log.info(f"Listening on {config.HOST}:{config.PORT}")
 
+    _load_proxy_state()
 
     # Auto-detect cookie file on startup
     if os.path.exists(COOKIES_PATH):

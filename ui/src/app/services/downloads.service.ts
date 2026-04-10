@@ -23,6 +23,16 @@ export interface AddDownloadPayload {
   ytdlOptionsPresets: string[];
   ytdlOptionsOverrides: string;
 }
+
+export interface ProxyConfig {
+  enabled: boolean;
+  scheme: 'socks5' | 'http' | 'https';
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  has_password?: boolean;
+}
 @Injectable({
   providedIn: 'root'
 })
@@ -206,6 +216,18 @@ export class DownloadsService {
 
   getCookieStatus() {
     return this.http.get<{ status: string; has_cookies: boolean }>('cookie-status').pipe(
+      catchError(this.handleHTTPError)
+    );
+  }
+
+  getProxyConfig() {
+    return this.http.get<{ status: string; proxy: ProxyConfig }>('proxy-config').pipe(
+      catchError(this.handleHTTPError)
+    );
+  }
+
+  saveProxyConfig(proxy: ProxyConfig) {
+    return this.http.post<{ status: string; proxy: ProxyConfig }>('proxy-config', { proxy }).pipe(
       catchError(this.handleHTTPError)
     );
   }

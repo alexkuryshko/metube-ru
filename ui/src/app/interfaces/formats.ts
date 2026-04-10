@@ -10,14 +10,14 @@ export interface AudioFormatOption extends Option {
 }
 
 export const DOWNLOAD_TYPES: Option[] = [
-  { id: "video", text: "Video" },
-  { id: "audio", text: "Audio" },
-  { id: "captions", text: "Captions" },
-  { id: "thumbnail", text: "Thumbnail" },
+  { id: "video", text: "Видео" },
+  { id: "audio", text: "Аудио" },
+  { id: "captions", text: "Субтитры" },
+  { id: "thumbnail", text: "Превью" },
 ];
 
 export const VIDEO_CODECS: Option[] = [
-  { id: "auto", text: "Auto" },
+  { id: "auto", text: "Авто" },
   { id: "h264", text: "H.264" },
   { id: "h265", text: "H.265 (HEVC)" },
   { id: "av1", text: "AV1" },
@@ -25,13 +25,13 @@ export const VIDEO_CODECS: Option[] = [
 ];
 
 export const VIDEO_FORMATS: Option[] = [
-  { id: "any", text: "Auto" },
+  { id: "any", text: "Авто" },
   { id: "mp4", text: "MP4" },
-  { id: "ios", text: "iOS Compatible" },
+  { id: "ios", text: "Совместимо с iOS" },
 ];
 
 export const VIDEO_QUALITIES: Quality[] = [
-  { id: "best", text: "Best" },
+  { id: "best", text: "Лучшее" },
   { id: "2160", text: "2160p" },
   { id: "1440", text: "1440p" },
   { id: "1080", text: "1080p" },
@@ -39,7 +39,7 @@ export const VIDEO_QUALITIES: Quality[] = [
   { id: "480", text: "480p" },
   { id: "360", text: "360p" },
   { id: "240", text: "240p" },
-  { id: "worst", text: "Worst" },
+  { id: "worst", text: "Худшее" },
 ];
 
 export const AUDIO_FORMATS: AudioFormatOption[] = [
@@ -47,7 +47,7 @@ export const AUDIO_FORMATS: AudioFormatOption[] = [
     id: "m4a",
     text: "M4A",
     qualities: [
-      { id: "best", text: "Best" },
+      { id: "best", text: "Лучшее" },
       { id: "192", text: "192 kbps" },
       { id: "128", text: "128 kbps" },
     ],
@@ -56,20 +56,20 @@ export const AUDIO_FORMATS: AudioFormatOption[] = [
     id: "mp3",
     text: "MP3",
     qualities: [
-      { id: "best", text: "Best" },
+      { id: "best", text: "Лучшее" },
       { id: "320", text: "320 kbps" },
       { id: "192", text: "192 kbps" },
       { id: "128", text: "128 kbps" },
     ],
   },
-  { id: "opus", text: "OPUS", qualities: [{ id: "best", text: "Best" }] },
-  { id: "wav", text: "WAV", qualities: [{ id: "best", text: "Best" }] },
-  { id: "flac", text: "FLAC", qualities: [{ id: "best", text: "Best" }] },
+  { id: "opus", text: "OPUS", qualities: [{ id: "best", text: "Лучшее" }] },
+  { id: "wav", text: "WAV", qualities: [{ id: "best", text: "Лучшее" }] },
+  { id: "flac", text: "FLAC", qualities: [{ id: "best", text: "Лучшее" }] },
 ];
 
 export const CAPTION_FORMATS: Option[] = [
   { id: "srt", text: "SRT" },
-  { id: "txt", text: "TXT (Text only)" },
+  { id: "txt", text: "TXT (только текст)" },
   { id: "vtt", text: "VTT" },
   { id: "ttml", text: "TTML" },
 ];
